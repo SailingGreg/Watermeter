@@ -1,5 +1,9 @@
 #
-# test ads feed
+# Smart water meter
+# The program queries thamestides.org to check the tidal hieghts
+# and if the tide is likely to lead to flooding it monitors and
+# records the water height within the undercroft.
+# it then emails a summary out to the nominated email
 #
 
 import time
@@ -12,7 +16,11 @@ import requests
 from lxml import html
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
+from emailcreds import * # account and password for email
 
+#FLOODTIDE = 7.0
+FLOODTIDE = 6.1
+TWOHOURS = 2 * 60 * 60
 loop = 1 # every second for now
 # loop = 60 # 60 seconds normally
 
@@ -34,21 +42,19 @@ def sendRaces(heights):
     raceday = datetime.now().strftime("%d %b %Y")
     #raceday = datetime.datetime.now().strftime("%d %b %Y")
 
-    # Credentials (to parameterise and inject)
-    username = 'ranelaghscapp@gmail.com'
-    password = 'R0nel0ghSC'
+    # Credentials - injected via emailcreds.py
 
+    # convert the text to mime
     msg = MIMEText(heights)
 
-    msg['Subject'] = subject
-    msg['From'] = fromaddr
     msg['To'] = g_mail_recipent # from the conf file
-
+    msg['From'] = fromaddr
+    msg['Subject'] = subject
 
     # The actual mail send
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
-    server.login(username, password)
+    server.login(eusername, epassword)
     #server.sendmail(fromaddr, toaddr, message)
     server.send_message(msg)
     server.close()
@@ -70,9 +76,15 @@ def getTides(tdate):
     dayurl = tideurl + sdate
 
     # need try/exception added
-    page = requests.get(dayurl) # get the day entry
+    try:
+        page = requests.get(dayurl) # get the day entry
+    except Exception as e: # we just note and return blank list
+        print ("Error on dayurl")
+        return tidelist
+
     if (page.status_code != 200):
         print ("Error on dayurl")
+        return tidelist
 
     tree = html.fromstring(page.content)
 
@@ -116,6 +128,7 @@ def getTides(tdate):
 
 # initialise
 
+print ("Initialising I2C/ADC")
 # Create the I2C bus - appears to default to address of 48
 i2c = busio.I2C(board.SCL, board.SDA)
 
@@ -130,30 +143,73 @@ chan = AnalogIn(ads, ADS.P0)
 
 print("{:>5}\t{:>5}".format('raw', 'v'))
 
-ydate = "2020-01-01"
+floods = [] # truncate
+ydate = "1970-01-01" # base of timestamp
 while True:
 
     # this is an infinite loop
     # we check the time and if another day check the tide situation
 
     fdate = datetime.now()
+    tsecs = datetime.timestamp(fdate)
+    #print (tsecs, fdate, type(fdate))
     tdate = fdate.strftime("%Y-%m-%d")
 
+    # if another day then get the tides
     if (ydate != tdate):
+        # send the previous days summary
+
         ydate = tdate
         print ("ydate ", ydate)
         tides = getTides(tdate) # "YYYY-MM-DD"
-    #     checkheights
+        for tide in tides:
+            theight = tide['height']
 
+            # if flood tide add to floods
+            if (len(theight) > 1 and float(theight) >= FLOODTIDE):
+                #print ("Flood ", theight)
+                fdate = tdate + " " + tide['time']
+                dobj = datetime.strptime(fdate, '%Y-%m-%d %I:%M')
+                fsecs = datetime.timestamp(dobj)
+                print ("> ", dobj, fsecs)
+
+                # add check if the flood is in the future!
+                # if (fsecs > tsecs):
+                flood = {'date': tdate, 'time': tide['time'], \
+					'secs': fsecs, 'height': theight}
+                floods.append(flood)
+
+        # now trim - that is remove anything older than now minus 2 hours
+        """
+        while (len (floods) > 0 and floods[0]['secs'] < (tsecs - TWOHOURS)):
+            print ("deleting ", floods[0])
+            floods.pop(0)
+        """
+    # end tides
+
+    # check water heights
     # value is 20.5 per mm and offset 12560 at around 3.5cm on the etape
     depth = (chan.value - 12560)/20.5
-    print("{:>5}\t{:>5.3f} {:>5.6f}".format(chan.value, chan.voltage, depth))
+    if (depth > 0): # then log
+        print("{:>5}\t{:>5.3f} {:>5.6f}".format(chan.value, chan.voltage, depth))
+        # write to reporting file
+        # we need to log the time/height to support reporting
+    """
+    rs = requests.get(windurl, allow_redirects=True)
+    open('./tmp/daywind-copy.png', 'wb').write(rs.content)
+    """
 
-    # if time window # is it in a time slot that needs to be monitored
 
-    # we need to log the time/height to support reporting
-    # print date/time, depth
-    # flush?
+    # are we within two hours of a high tide?
+    loop = 0
+    for flood in floods:
+        if (flood['secs'] >= (tsecs - TWOHOURS) and \
+				 flood['secs'] <= (tsecs + TWOHOURS)):
+            loop = 1 # delay 5 minutes
+        else:
+            loop = 3 # delay 1 hour
+        if (loop == 1): # within two hours of tide so short delay
+           break
 
     time.sleep(loop)
 #   end of while true
