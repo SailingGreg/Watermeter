@@ -15,13 +15,25 @@ import requests
 #import http.client  # redundant as using requests
 from lxml import html
 from datetime import datetime, timezone
+import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
 from emailcreds import * # account and password for email
 
 #FLOODTIDE = 7.0
-FLOODTIDE = 6.1
-TWOHOURS = 2 * 60 * 60
-loop = 1 # every second for now
+FLOODTIDE = 5.9 # used to get data
+ONEMIN = 60 # 1 minute
+#FIVEMINS = 5 # 5 * 60
+FIVEMINS = 5 * 60 # 5 minutes
+#ONEHOUR = 15 # 2 * 60 * 60
+ONEHOUR = 1 * 60 * 60 # 1 hour
+TWOHOURS = 2 * 60 * 60 # 2 hours
+ONEDAY = 24 * 60 * 60 # 24 hours for now
+
+#loop = 1 # every second for now
 # loop = 60 # 60 seconds normally
 
 # load tides for 'today'
@@ -32,31 +44,58 @@ def removeNonAscii(s): return "".join(i for i in s if (ord(i)<128 and ord(i)>31)
 
 #
 # email results file to defined recipent
-def sendRaces(heights):
+def sendReadings(mreadings):
     #
-    #g_mail_recipent = 'integ@ranelaghsc.co.uk'
     g_mail_recipent = 'greg.brougham@gmail.com'
     #g_mail_recipent = 'racing@ranelaghsc.co.uk'
     fromaddr = 'ranelaghscapp@gmail.com'
     subject = "Club water height information"
-    raceday = datetime.now().strftime("%d %b %Y")
+    raceday = datetime.now().strftime("%Y-%m-%d")
     #raceday = datetime.datetime.now().strftime("%d %b %Y")
 
-    # Credentials - injected via emailcreds.py
+    # note redentials are injected via emailcreds.py
+
+    # need to add date stamp
+    tdir = "/tmp/"
+    tfile = "watermeter-" + raceday + ".csv"
+    # save readings to a file and then attach
+    fd = open (tdir + tfile, "wt")
+    for reading in mreadings:
+        fd.write(reading['date'] + "," + str(int(reading['height'])) + "\n")
+    fd.close()
+
+    with open(tdir + tfile, "rt") as attachment:
+        # Add file as application/octet-stream
+        # Email client can usually download this automatically as attachment
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(attachment.read())
+
+    encoders.encode_base64(part)
+    part.add_header(
+        "Content-Disposition",
+        f"attachment; filename= {tfile}",
+    )
+
+    body = "This is the file for date " + raceday
+    msg = MIMEMultipart()
+    msg.attach(MIMEText(body, "plain"))
+    msg.attach(part)
 
     # convert the text to mime
-    msg = MIMEText(heights)
+    #msg = MIMEText("This is a message")
 
     msg['To'] = g_mail_recipent # from the conf file
     msg['From'] = fromaddr
     msg['Subject'] = subject
 
+    text = msg.as_string()
+
     # The actual mail send
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
     server.login(eusername, epassword)
-    #server.sendmail(fromaddr, toaddr, message)
-    server.send_message(msg)
+    server.sendmail(fromaddr, g_mail_recipent, text)
+    #server.send_message(text)
     server.close()
 # end of sendRaces()
 
@@ -144,7 +183,9 @@ chan = AnalogIn(ads, ADS.P0)
 print("{:>5}\t{:>5}".format('raw', 'v'))
 
 floods = [] # truncate
+wreadings = [] # truncate
 ydate = "1970-01-01" # base of timestamp
+cnt = 1
 while True:
 
     # this is an infinite loop
@@ -155,19 +196,29 @@ while True:
     #print (tsecs, fdate, type(fdate))
     tdate = fdate.strftime("%Y-%m-%d")
 
+    #if ((cnt % 15) == 0 and len(wreadings) > 0):
+            #sendReadings(wreadings)
+            #wreadings = [] # then truncate
+    #cnt = cnt + 1
+
     # if another day then get the tides
     if (ydate != tdate):
         # send the previous days summary
+        if (len(wreadings) > 0):
+            sendReadings(wreadings)
+            wreadings = [] # then truncate
 
         ydate = tdate
         print ("ydate ", ydate)
+
+        # add tides if they are high to 'floods' list
         tides = getTides(tdate) # "YYYY-MM-DD"
         for tide in tides:
             theight = tide['height']
 
-            # if flood tide add to floods
+            # if flood tide add
             if (len(theight) > 1 and float(theight) >= FLOODTIDE):
-                #print ("Flood ", theight)
+                print ("Flood ", theight)
                 fdate = tdate + " " + tide['time']
                 dobj = datetime.strptime(fdate, '%Y-%m-%d %I:%M')
                 fsecs = datetime.timestamp(dobj)
@@ -180,36 +231,36 @@ while True:
                 floods.append(flood)
 
         # now trim - that is remove anything older than now minus 2 hours
-        """
-        while (len (floods) > 0 and floods[0]['secs'] < (tsecs - TWOHOURS)):
+        while (len (floods) > 0 and floods[0]['secs'] < (tsecs - ONEDAY)):
             print ("deleting ", floods[0])
             floods.pop(0)
-        """
     # end tides
 
     # check water heights
     # value is 20.5 per mm and offset 12560 at around 3.5cm on the etape
     depth = (chan.value - 12560)/20.5
-    if (depth > 0): # then log
-        print("{:>5}\t{:>5.3f} {:>5.6f}".format(chan.value, chan.voltage, depth))
-        # write to reporting file
-        # we need to log the time/height to support reporting
-    """
-    rs = requests.get(windurl, allow_redirects=True)
-    open('./tmp/daywind-copy.png', 'wb').write(rs.content)
-    """
-
+    #if (depth >= -1): # then log
+    # we need to log the time/height to support reporting
+    rdate = datetime.now() # change to excel compatiable date
+    wdate = rdate.strftime("%Y-%m-%d %H:%M:%S")
+    reading = {'date': wdate, 'height': depth}
+    print ("Reading >",reading)
+    wreadings.append(reading)
 
     # are we within two hours of a high tide?
-    loop = 0
+    loop = ONEHOUR
     for flood in floods:
         if (flood['secs'] >= (tsecs - TWOHOURS) and \
 				 flood['secs'] <= (tsecs + TWOHOURS)):
-            loop = 1 # delay 5 minutes
+            loop = FIVEMINS # delay 5 minutes
         else:
-            loop = 3 # delay 1 hour
-        if (loop == 1): # within two hours of tide so short delay
-           break
+            loop = ONEHOUR # delay 1 hour
+        if (loop == FIVEMINS): # short delay break 
+            break
 
+    # now sleep for a minute or an hour!
+    # print ("Sleeping >", loop)
     time.sleep(loop)
+
 #   end of while true
+# end of file
