@@ -1,0 +1,17 @@
+# wmeter systemd service configuration file
+# install to /lib/systemd/system/watermeter.service
+# then systemctl daemon-reload & then systemctl enable wmeter.service
+
+[Unit]
+Description=Smart Water Meter
+After=multi-user.target
+
+[Service]
+Type=idle
+#ExecStart=/home/pi/Watermeter/wmeter.sh
+ExecStart=/usr/bin/python3 /home/pi/Watermeter/wmeter.py
+StandardOutput=file:/home/pi/Watermeter/wmeter.log
+StandardError=file:/home/pi/Watermeter/wmeter.log
+
+[Install]
+WantedBy=multi-user.target

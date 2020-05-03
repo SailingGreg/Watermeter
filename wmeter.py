@@ -237,7 +237,8 @@ while True:
     # if another day then get the tides
     if (ydate != tdate):
         # send the previous days summary
-        if (len(wreadings) > 0):
+        # extend this to only send if floods to reduce volume
+        if (len(wreadings) > 0): # and len(floods) > 0):
             sendReadings(wreadings)
             wreadings = [] # then truncate
 
