@@ -6,6 +6,8 @@
 # it then emails a summary out to the nominated email
 #
 
+import os
+import logging
 import time
 import board
 import busio
@@ -15,6 +17,7 @@ import requests
 #import http.client  # redundant as using requests
 from lxml import html
 from datetime import datetime, timezone
+import dateutil.relativedelta
 import smtplib
 from email import encoders
 from email.mime.base import MIMEBase
@@ -24,7 +27,7 @@ from bs4 import BeautifulSoup
 from emailcreds import * # account and password for email
 
 #FLOODTIDE = 7.0
-FLOODTIDE = 5.9 # used to get data
+FLOODTIDE = 6.1 # used to get data
 ONEMIN = 60 # 1 minute
 #FIVEMINS = 5 # 5 * 60
 FIVEMINS = 5 * 60 # 5 minutes
@@ -33,13 +36,7 @@ ONEHOUR = 1 * 60 * 60 # 1 hour
 TWOHOURS = 2 * 60 * 60 # 2 hours
 ONEDAY = 24 * 60 * 60 # 24 hours for now
 
-#loop = 1 # every second for now
-# loop = 60 # 60 seconds normally
-
-# load tides for 'today'
-
-# flag slots for monitoring
-
+# simple function to remove non-ascii characters
 def removeNonAscii(s): return "".join(i for i in s if (ord(i)<128 and ord(i)>31))
 
 #
@@ -57,6 +54,7 @@ def sendReadings(mreadings):
 
     # need to add date stamp
     tdir = "/tmp/"
+    #tfile = "watermeter.csv"
     tfile = "watermeter-" + raceday + ".csv"
     # save readings to a file and then attach
     fd = open (tdir + tfile, "wt")
@@ -90,13 +88,17 @@ def sendReadings(mreadings):
 
     text = msg.as_string()
 
-    # The actual mail send
+    # The actual mail send add try/except
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
     server.login(eusername, epassword)
     server.sendmail(fromaddr, g_mail_recipent, text)
     #server.send_message(text)
     server.close()
+
+    # remove the temporary file
+    if os.path.exists(tdir + tfile):
+        os.remove(tdir + tfile)
 # end of sendRaces()
 
 
@@ -118,11 +120,11 @@ def getTides(tdate):
     try:
         page = requests.get(dayurl) # get the day entry
     except Exception as e: # we just note and return blank list
-        print ("Error on dayurl")
+        logger.error ("Error on dayurl")
         return tidelist
 
     if (page.status_code != 200):
-        print ("Error on dayurl")
+        logger.error ("Error on dayurl")
         return tidelist
 
     tree = html.fromstring(page.content)
@@ -164,10 +166,44 @@ def getTides(tdate):
     return tidelist
 # end getTides()
 
+# get the tides for day and check for floods
+def addFloods(tdate, floods):
 
-# initialise
+    # add tides if they are high to 'floods' list
+    tides = getTides(tdate) # "YYYY-MM-DD"
+    for tide in tides:
+        theight = tide['height']
 
-print ("Initialising I2C/ADC")
+        # if flood tide add
+        if (len(theight) > 1 and float(theight) >= FLOODTIDE):
+            logger.info ("Flood " + str(theight))
+            fdate = tdate + " " + tide['time']
+            dobj = datetime.strptime(fdate, '%Y-%m-%d %H:%M')
+            fsecs = datetime.timestamp(dobj)
+            logger.info ("> " + fdate + " " + str(fsecs))
+
+            # add check if the flood is in the future!
+            # if (fsecs > tsecs):
+            flood = {'date': tdate, 'time': tide['time'], \
+					'secs': fsecs, 'height': theight}
+            floods.append(flood)
+    # end of tides
+
+    # now trim - that is remove anything older than now minus 2 hours
+    while (len (floods) > 0 and floods[0]['secs'] < (tsecs - ONEDAY)):
+        # need to update this to str()
+        #logger.info ("deleting ", floods[0]['date'])
+        floods.pop(0)
+# end addFloods
+
+
+# initialise - start of program
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+logger.info ("Initialising I2C/ADC")
 # Create the I2C bus - appears to default to address of 48
 i2c = busio.I2C(board.SCL, board.SDA)
 
@@ -177,10 +213,7 @@ ads = ADS.ADS1015(i2c)
 # Create single-ended input on channel 0
 chan = AnalogIn(ads, ADS.P0)
 
-# Create differential input between channel 0 and 1
-#chan = AnalogIn(ads, ADS.P0, ADS.P1)
-
-print("{:>5}\t{:>5}".format('raw', 'v'))
+# print("{:>5}\t{:>5}".format('raw', 'v'))
 
 floods = [] # truncate
 wreadings = [] # truncate
@@ -208,46 +241,37 @@ while True:
             sendReadings(wreadings)
             wreadings = [] # then truncate
 
+        # add initial set if first run
+        if (ydate == "1970-01-01"): # base of timestamp
+            addFloods(tdate, floods)
+
+        # and add tomorrow so we have a 48 hour window
+        # this covers the situation of a high tide with an hour of midnight
+        fdate = datetime.now() + dateutil.relativedelta.relativedelta(days=1)
+        jtdate = fdate.strftime("%Y-%m-%d")
+        addFloods(jtdate, floods)
+
+        #for flood in floods:
+            #print (flood)
+
         ydate = tdate
         print ("ydate ", ydate)
-
-        # add tides if they are high to 'floods' list
-        tides = getTides(tdate) # "YYYY-MM-DD"
-        for tide in tides:
-            theight = tide['height']
-
-            # if flood tide add
-            if (len(theight) > 1 and float(theight) >= FLOODTIDE):
-                print ("Flood ", theight)
-                fdate = tdate + " " + tide['time']
-                dobj = datetime.strptime(fdate, '%Y-%m-%d %I:%M')
-                fsecs = datetime.timestamp(dobj)
-                print ("> ", dobj, fsecs)
-
-                # add check if the flood is in the future!
-                # if (fsecs > tsecs):
-                flood = {'date': tdate, 'time': tide['time'], \
-					'secs': fsecs, 'height': theight}
-                floods.append(flood)
-
-        # now trim - that is remove anything older than now minus 2 hours
-        while (len (floods) > 0 and floods[0]['secs'] < (tsecs - ONEDAY)):
-            print ("deleting ", floods[0])
-            floods.pop(0)
-    # end tides
 
     # check water heights
     # value is 20.5 per mm and offset 12560 at around 3.5cm on the etape
     depth = (chan.value - 12560)/20.5
+
     #if (depth >= -1): # then log
     # we need to log the time/height to support reporting
     rdate = datetime.now() # change to excel compatiable date
     wdate = rdate.strftime("%Y-%m-%d %H:%M:%S")
     reading = {'date': wdate, 'height': depth}
-    print ("Reading >",reading)
+    logger.info ("Reading > " + wdate + " " + str(depth))
     wreadings.append(reading)
 
     # are we within two hours of a high tide?
+    # should change this so it checks the difference and if with 3 hours
+    # then only sleeps for the difference to the 2hr mark
     loop = ONEHOUR
     for flood in floods:
         if (flood['secs'] >= (tsecs - TWOHOURS) and \
